@@ -1,0 +1,12 @@
+{
+  "background_color": "#ffffff",
+  "description": "definitive_mortal-street-kombat-",
+  "dir": "ltr",
+  "display": "standalone",
+  "name": "definitive_mortal-street-kombat-",
+  "orientation": "any",
+  "scope": "/",
+  "short_name": "definitive_mortal-street-kombat-",
+  "start_url": "/",
+  "theme_color": "#ffffff"
+}

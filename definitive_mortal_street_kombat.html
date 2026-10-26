@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mortal Street Kombat - Ultimate Arcade Edition</title>
+    <style>
+        body {
+            background-color: #010103;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        h1 {
+            margin: 0 0 3px 0;
+            font-size: 19px;
+            letter-spacing: 3px;
+            color: #ff0055;
+            text-shadow: 0 0 12px rgba(255, 0, 85, 0.8);
+        }
+        canvas {
+            border: 4px solid #ff0055;
+            background: #050510;
+            box-shadow: 0 0 60px rgba(255, 0, 85, 0.4);
+        }
+        .controles-info {
+            font-size: 10px;
+            color: #aaa;
+            margin-top: 5px;
+            text-align: center;
+        }
+        .controles-info b { color: #ff0055; }
+    </style>
+</head>
+<body>
+
+    <h1>MORTAL STREET KOMBAT // ULTIMATE ARCADE EDITION</h1>
+    <canvas id="gameCanvas" width="950" height="520"></canvas>
+    <div class="controles-info">
+        <b>Menús:</b> W/S o Flechas para navegar | <b>ENTER</b> para confirmar.<br>
+        <b>P1:</b> Mov: A/D | Salto: W | Agach: S | Golpe: F | Patada: G | Bloq: H | <b>Especial: E</b> | <i>(Tag 2v2: T)</i><br>
+        <b>P2 / CPU:</b> Mov: IZQ/DER | Salto: ARR | Agach: ABA | Golpe: J | Patada: K | Bloq: L | <b>Especial: I</b>
+    </div>
+
+    <!-- Script de red peer-to-peer para modo LAN -->
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        // --- SISTEMA DE AUDIO NATIVO ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function reproducirSonido(tipo) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            let osc = audioCtx.createOscillator();
+            let gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            let now = audioCtx.currentTime;
+
+            if (tipo === 'golpe') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(160, now);
+                osc.frequency.exponentialRampToValueAtTime(20, now + 0.15);
+                gain.gain.setValueAtTime(0.4, now);
+                gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+                osc.start(now); osc.stop(now + 0.15);
+            } else if (tipo === 'especial') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(300, now);
+                osc.frequency.exponentialRampToValueAtTime(800, now + 0.35);
+                gain.gain.setValueAtTime(0.35, now);
+                gain.gain.linearRampToValueAtTime(0.01, now + 0.35);
+                osc.start(now); osc.stop(now + 0.35);
+            } else if (tipo === 'menu') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(580, now);
+                gain.gain.setValueAtTime(0.15, now);
+                gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
+                osc.start(now); osc.stop(now + 0.08);
+            }
+        }
+
+        let estadoJuego = 'INICIO';
+        let modoJuegoActual = '1v1'; // '1v1', 'vs_cpu', '2v2', 'torneo', 'lan'
+        let dificultadCpu = 'Normal'; // 'Fácil', 'Normal', 'Difícil'
+        let menuOpcionIndex = 0;
+        let menuDificultadIndex = 0;
+        let menuLanIndex = 0;
+        let rondaTorneo = 1;
+        let roundsP1 = 0, roundsP2 = 0;
+        let temblorPantalla = 0;
+
+        let peer = null, conn = null;
+        let esHost = false;
+
+        const escenarios = [
+            { nombre: "Ciber Arena Neón", bg: "#0d0a17", suelo: "#191132", linea: "#ff0055", detalle: "#00ffcc" },
+            { nombre: "Coliseo Orbital", bg: "#010612", suelo: "#081528", linea: "#00ffff", detalle: "#ff00aa" },
+            { nombre: "Laboratorio Omega", bg: "#160303", suelo: "#2e0f0f", linea: "#ff4400", detalle: "#ffff00" }
+        ];
+        let seleccionEscenario = 0;
+
+        const personajesData = [
+            { id: 0, nombre: "KAI", colorTraje: "#00ffcc", colorCabello: "#111111", colorPiel: "#ffccaa", estiloAcc: "cinta", arma: "Katana de Plasma", habilidad: "Onda Energética", velocidad: 4.8, daño: 11, vida: 100 },
+            { id: 1, nombre: "VORTEX", colorTraje: "#0088ff", colorCabello: "#222255", colorPiel: "#aaccff", estiloAcc: "casco", arma: "Martillo Ciber", habilidad: "Terremoto Sísmico", velocidad: 3.6, daño: 15, vida: 120 },
+            { id: 2, nombre: "VALKYRIE", colorTraje: "#ff0055", colorCabello: "#ffffff", colorPiel: "#ffbbcc", estiloAcc: "diadema", arma: "Dagas gemelas", habilidad: "Ráfaga Lumínica", velocidad: 5.5, daño: 9, vida: 90 },
+            { id: 3, nombre: "BLAZE", colorTraje: "#ff5500", colorCabello: "#551100", colorPiel: "#ffd1a4", estiloAcc: "gafas", arma: "Espada de Fuego", habilidad: "Meteorito Ígneo", velocidad: 4.2, daño: 14, vida: 100 },
+            { id: 4, nombre: "SPECTRE", colorTraje: "#aa00ff", colorCabello: "#330044", colorPiel: "#e0bbff", estiloAcc: "capucha", arma: "Guadaña Sombra", habilidad: "Corte Espectral", velocidad: 5.8, daño: 8, vida: 85 },
+            { id: 5, nombre: "TITAN", colorTraje: "#777777", colorCabello: "#cccccc", colorPiel: "#ffccaa", estiloAcc: "yelmo", arma: "Hacha de Batalla", habilidad: "Impacto Titánico", velocidad: 2.8, daño: 19, vida: 160 },
+            { id: 6, nombre: "VENOM", colorTraje: "#00bb33", colorCabello: "#003311", colorPiel: "#ccffcc", estiloAcc: "mascara", arma: "Cuchillas Tóxicas", habilidad: "Pulso Venenoso", velocidad: 5.0, daño: 12, vida: 95 },
+            { id: 7, nombre: "PHANTOM", colorTraje: "#00ffff", colorCabello: "#003333", colorPiel: "#aaffff", estiloAcc: "visor", arma: "Lanza Láser", habilidad: "Destello Sónico", velocidad: 5.2, daño: 10, vida: 90 },
+            { id: 8, nombre: "CYCLOPS", colorTraje: "#ffcc00", colorCabello: "#443300", colorPiel: "#ffdead", estiloAcc: "monoculo", arma: "Cañón de Antebrazo", habilidad: "Rayo Ocular", velocidad: 3.9, daño: 16, vida: 115 },
+            { id: 9, nombre: "OMEGA", colorTraje: "#ffffff", colorCabello: "#555555", colorPiel: "#ffcccc", estiloAcc: "corona", arma: "Espada Definitiva", habilidad: "Supernova Final", velocidad: 4.8, daño: 13, vida: 130 }
+        ];
+
+        const jefeGold = {
+            nombre: "GOLD [JEFE SUPREMO]", colorTraje: "#ffd700", colorCabello: "#ffaa00", colorPiel: "#fff0cc",
+            estiloAcc: "corona", arma: "Espada de Oro Absoluto", habilidad: "Juicio Divino", velocidad: 5.2, daño: 22, vida: 250
+        };
+
+        let seleccionP1 = 0, seleccionP2 = 1, seleccionP1_B = 2, seleccionP2_B = 3;
+        let proyectiles = [];
+        let particulas = [];
+        let teclas = {};
+
+        window.addEventListener("keydown", (e) => {
+            teclas[e.code] = true;
+
+            if (estadoJuego === 'INICIO') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); menuOpcionIndex = (menuOpcionIndex - 1 + 5) % 5; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); menuOpcionIndex = (menuOpcionIndex + 1) % 5; }
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    reproducirSonido('menu');
+                    if (menuOpcionIndex === 0) modoJuegoActual = '1v1';
+                    else if (menuOpcionIndex === 1) modoJuegoActual = 'vs_cpu';
+                    else if (menuOpcionIndex === 2) modoJuegoActual = '2v2';
+                    else if (menuOpcionIndex === 3) { modoJuegoActual = 'torneo'; rondaTorneo = 1; }
+                    else if (menuOpcionIndex === 4) { modoJuegoActual = 'lan'; estadoJuego = 'MENU_LAN'; return; }
+
+                    if (modoJuegoActual === 'vs_cpu' || modoJuegoActual === 'torneo') {
+                        estadoJuego = 'MENU_DIFICULTAD';
+                    } else {
+                        estadoJuego = 'MENU_ESCENARIO';
+                    }
+                }
+            } else if (estadoJuego === 'MENU_DIFICULTAD') {
+                let diffs = ['Fácil', 'Normal', 'Difícil'];
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); menuDificultadIndex = (menuDificultadIndex - 1 + 3) % 3; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); menuDificultadIndex = (menuDificultadIndex + 1) % 3; }
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    reproducirSonido('menu');
+                    dificultadCpu = diffs[menuDificultadIndex];
+                    estadoJuego = 'MENU_ESCENARIO';
+                }
+            } else if (estadoJuego === 'MENU_LAN') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); menuLanIndex = (menuLanIndex - 1 + 2) % 2; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); menuLanIndex = (menuLanIndex + 1) % 2; }
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    reproducirSonido('menu');
+                    if (menuLanIndex === 0) {
+                        esHost = true;
+                        peer = new Peer();
+                        peer.on('open', (id) => { alert("Tu código de sala LAN es: " + id); });
+                        peer.on('connection', (c) => {
+                            conn = c; configurarConexionLan(); estadoJuego = 'MENU_ESCENARIO';
+                        });
+                    } else {
+                        esHost = false;
+                        let codigoInput = prompt("Ingresa el código de la sala LAN del host:");
+                        if (codigoInput) {
+                            peer = new Peer();
+                            peer.on('open', () => {
+                                conn = peer.connect(codigoInput); configurarConexionLan(); estadoJuego = 'MENU_P2';
+                            });
+                        }
+                    }
+                }
+            } else if (estadoJuego === 'MENU_ESCENARIO') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); seleccionEscenario = (seleccionEscenario - 1 + escenarios.length) % escenarios.length; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); seleccionEscenario = (seleccionEscenario + 1) % escenarios.length; }
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    reproducirSonido('menu');
+                    if (modoJuegoActual === 'lan' && esHost) conn.send({ tipo: 'ESCENARIO', esc: seleccionEscenario });
+                    estadoJuego = 'MENU_P1';
+                }
+            } else if (estadoJuego === 'MENU_P1') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); seleccionP1 = (seleccionP1 - 1 + personajesData.length) % personajesData.length; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); seleccionP1 = (seleccionP1 + 1) % personajesData.length; }
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    reproducirSonido('menu');
+                    if (modoJuegoActual === '2v2') { estadoJuego = 'MENU_P1_B'; }
+                    else if (modoJuegoActual === 'vs_cpu' || modoJuegoActual === 'torneo') { iniciarPeleaReal(); }
+                    else { estadoJuego = 'MENU_P2'; }
+                }
+            } else if (estadoJuego === 'MENU_P1_B') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); seleccionP1_B = (seleccionP1_B - 1 + personajesData.length) % personajesData.length; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); seleccionP1_B = (seleccionP1_B + 1) % personajesData.length; }
+                if (e.code === 'Enter' || e.code === 'Space') { reproducirSonido('menu'); estadoJuego = 'MENU_P2'; }
+            } else if (estadoJuego === 'MENU_P2') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); seleccionP2 = (seleccionP2 - 1 + personajesData.length) % personajesData.length; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); seleccionP2 = (seleccionP2 + 1) % personajesData.length; }
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    reproducirSonido('menu');
+                    estadoJuego = (modoJuegoActual === '2v2') ? 'MENU_P2_B' : 'INICIAR_COMBATE_DIRECTO';
+                    if (estadoJuego === 'INICIAR_COMBATE_DIRECTO') iniciarPeleaReal();
+                }
+            } else if (estadoJuego === 'MENU_P2_B') {
+                if (e.code === 'KeyW' || e.code === 'ArrowUp') { reproducirSonido('menu'); seleccionP2_B = (seleccionP2_B - 1 + personajesData.length) % personajesData.length; }
+                if (e.code === 'KeyS' || e.code === 'ArrowDown') { reproducirSonido('menu'); seleccionP2_B = (seleccionP2_B + 1) % personajesData.length; }
+                if (e.code === 'Enter' || e.code === 'Space') { reproducirSonido('menu'); iniciarPeleaReal(); }
+            } else if (estadoJuego === 'GAMEOVER') {
+                if (e.code === 'Enter' || e.code === 'Space') { reproducirSonido('menu'); estadoJuego = 'INICIO'; }
+            }
+        });
+        window.addEventListener("keyup", (e) => { teclas[e.code] = false; });
+
+        function configurarConexionLan() {
+            conn.on('data', (data) => {
+                if (data.tipo === 'INICIAR') { iniciarPeleaReal(); }
+                if (data.tipo === 'INPUT') {
+                    if (fighter2) {
+                        fighter2.x = data.x; fighter2.y = data.y; fighter2.vx = data.vx; fighter2.vy = data.vy;
+                        fighter2.estado = data.estado; fighter2.mirandoDerecha = data.mirandoDerecha; fighter2.vida = data.vida;
+                    }
+                }
+            });
+        }
+
+        let fighter1, fighter2, fighter1_B, fighter2_B;
+        let activoP1 = 1, activoP2 = 2;
+
+        function crearLuchadorCompleto(config, xInicial, esP1) {
+            return {
+                nombre: config.nombre, arma: config.arma, habilidad: config.habilidad,
+                colorTraje: config.colorTraje, colorCabello: config.colorCabello, colorPiel: config.colorPiel, estiloAcc: config.estiloAcc,
+                velocidad: config.velocidad, dañoBase: config.daño, vidaMax: config.vida, vida: config.vida,
+                x: xInicial, y: 340, ancho: 44, alto: 120, vx: 0, vy: 0, gravedad: 0.7, salto: -13,
+                mirandoDerecha: esP1, estado: 'IDLE', tiempoAccion: 0, energia: 0,
+                esCpu: !esP1 && (modoJuegoActual === 'vs_cpu' || modoJuegoActual === 'torneo')
+            };
+        }
+
+        function iniciarPeleaReal() {
+            if (modoJuegoActual === 'torneo' && rondaTorneo === 3) {
+                fighter1 = crearLuchadorCompleto(personajesData[seleccionP1], 200, true);
+                fighter2 = crearLuchadorCompleto(jefeGold, 660, false);
+                fighter2.esCpu = true;
+            } else {
+                fighter1 = crearLuchadorCompleto(personajesData[seleccionP1], 200, true);
+                let configP2 = (modoJuegoActual === 'torneo') ? personajesData[Math.floor(Math.random() * personajesData.length)] : personajesData[seleccionP2];
+                fighter2 = crearLuchadorCompleto(configP2, 660, false);
+            }
+
+            if (modoJuegoActual === '2v2') {
+                fighter1_B = crearLuchadorCompleto(personajesData[seleccionP1_B], 140, true);
+                fighter2_B = crearLuchadorCompleto(personajesData[seleccionP2_B], 720, false);
+                activoP1 = 1; activoP2 = 2;
+            } else {
+                fighter1_B = null; fighter2_B = null;
+            }
+
+            proyectiles = []; particulas = []; roundsP1 = 0; roundsP2 = 0;
+            estadoJuego = 'PELEA';
+        }
+
+        function reiniciarRonda() {
+            fighter1.x = 200; fighter1.y = 340; fighter1.vida = fighter1.vidaMax; fighter1.estado = 'IDLE';
+            fighter2.x = 660; fighter2.y = 340; fighter2.vida = fighter2.vidaMax; fighter2.estado = 'IDLE';
+            if (fighter1_B) { fighter1_B.x = 140; fighter1_B.vida = fighter1_B.vidaMax; }
+            if (fighter2_B) { fighter2_B.x = 720; fighter2_B.vida = fighter2_B.vidaMax; }
+            proyectiles = []; particulas = [];
+            estadoJuego = 'PELEA';
+        }
+
+        function crearChispas(x, y, color) {
+            for (let i = 0; i < 10; i++) {
+                let ang = Math.random() * Math.PI * 2;
+                let vel = Math.random() * 5 + 1;
+                particulas.push({ x, y, vx: Math.cos(ang)*vel, vy: Math.sin(ang)*vel, vida: Math.random()*15+8, color });
+            }
+        }
+
+        function aplicarDaño(atacante, defensor, daño) {
+            temblorPantalla = 8;
+            reproducirSonido('golpe');
+            atacante.energia = Math.min(100, atacante.energia + 20);
+            crearChispas(defensor.x + 20, defensor.y + 50, atacante.colorTraje || "#ffaa00");
+
+            if (defensor.estado === 'BLOQUEO') {
+                daño = Math.floor(daño * 0.25);
+            } else {
+                defensor.vida -= daño;
+                defensor.estado = 'DAÑO';
+                defensor.tiempoAccion = 15;
+            }
+
+            if (defensor.vida <= 0) {
+                defensor.vida = 0;
+                defensor.estado = 'NOQUEADO';
+                if (atacante === fighter1 || atacante === fighter1_B) roundsP1++; else roundsP2++;
+
+                if (roundsP1 >= 2 || roundsP2 >= 2) {
+                    setTimeout(() => {
+                        if (modoJuegoActual === 'torneo' && roundsP1 >= 2) {
+                            if (rondaTorneo < 3) { rondaTorneo++; estadoJuego = 'MENU_P1'; }
+                            else { estadoJuego = 'GAMEOVER'; }
+                        } else { estadoJuego = 'GAMEOVER'; }
+                    }, 2000);
+                } else { setTimeout(reiniciarRonda, 2000); }
+            }
+        }
+
+        function dispararHabilidadEspecial(luchador, rival) {
+            if (luchador.energia >= 100) {
+                luchador.energia = 0;
+                temblorPantalla = 12;
+                reproducirSonido('especial');
+                proyectiles.push({
+                    x: luchador.mirandoDerecha ? luchador.x + 40 : luchador.x - 20,
+                    y: luchador.y + 45,
+                    vx: luchador.mirandoDerecha ? 10 : -10,
+                    daño: 35,
+                    color: luchador.colorTraje || "#ffd700",
+                    amigo: (luchador === fighter1 || luchador === fighter1_B)
+                });
+            }
+        }
+
+        function actualizarCpu(luchador, rival) {
+            if (luchador.estado === 'NOQUEADO') return;
+            let dist = rival.x - luchador.x;
+            let probReaccion = (dificultadCpu === 'Difícil') ? 0.18 : (dificultadCpu === 'Normal') ? 0.08 : 0.03;
+
+            luchador.vx = 0; luchador.estado = 'IDLE';
+
+            if (Math.abs(dist) > 55) {
+                luchador.vx = dist > 0 ? luchador.velocidad * 0.9 : -luchador.velocidad * 0.9;
+                luchador.mirandoDerecha = dist > 0;
+                luchador.estado = 'CAMINANDO';
+            } else {
+                luchador.mirandoDerecha = dist > 0;
+                let rnd = Math.random();
+                if (rnd < probReaccion) {
+                    luchador.estado = rnd > 0.5 ? 'GOLPE' : 'PATADA';
+                    luchador.tiempoAccion = 16;
+                } else if (luchador.energia >= 100 && rnd < 0.3) {
+                    dispararHabilidadEspecial(luchador, rival);
+                } else if (rnd < 0.4) {
+                    luchador.estado = 'BLOQUEO';
+                }
+            }
+
+            luchador.x += luchador.vx;
+            luchador.vy += luchador.gravedad;
+            luchador.y += luchador.vy;
+            if (luchador.y >= 340) { luchador.y = 340; luchador.vy = 0; }
+
+            if (luchador.estado === 'GOLPE' || luchador.estado === 'PATADA') {
+                luchador.tiempoAccion--;
+                if (luchador.tiempoAccion === 6) {
+                    let hX = luchador.mirandoDerecha ? luchador.x + luchador.ancho : luchador.x - 45;
+                    let hY = luchador.y + 30;
+                    if (hX < rival.x + rival.ancho && hX + 45 > rival.x && hY < rival.y + rival.alto && hY + 30 > rival.y) {
+                        aplicarDaño(luchador, rival, Math.floor(luchador.dañoBase * (luchador.estado === 'GOLPE' ? 1 : 1.4)));
+                    }
+                }
+            }
+        }
+
+        function actualizarLuchador(luchador, rival, controles) {
+            if (luchador.esCpu) { actualizarCpu(luchador, rival); return; }
+            if (luchador.estado === 'NOQUEADO') return;
+
+            if (luchador.estado === 'DAÑO') {
+                luchador.tiempoAccion--;
+                if (luchador.tiempoAccion <= 0) luchador.estado = 'IDLE';
+                return;
+            }
+
+            if (luchador.estado === 'GOLPE' || luchador.estado === 'PATADA') {
+                luchador.tiempoAccion--;
+                if (luchador.tiempoAccion === 6) {
+                    let hX = luchador.mirandoDerecha ? luchador.x + luchador.ancho : luchador.x - 45;
+                    let hY = luchador.y + 30;
+                    if (hX < rival.x + rival.ancho && hX + 45 > rival.x && hY < rival.y + rival.alto && hY + 30 > rival.y) {
+                        aplicarDaño(luchador, rival, Math.floor(luchador.dañoBase * (luchador.estado === 'GOLPE' ? 1 : 1.4)));
+                    }
+                }
+                if (luchador.tiempoAccion <= 0) luchador.estado = 'IDLE';
+                return;
+            }
+
+            luchador.vy += luchador.gravedad;
+            luchador.y += luchador.vy;
+            if (luchador.y >= 340) { luchador.y = 340; luchador.vy = 0; }
+
+            luchador.vx = 0; luchador.estado = 'IDLE';
+
+            if (teclas[controles.especial]) { dispararHabilidadEspecial(luchador, rival); return; }
+            if (teclas[controles.bloquear]) { luchador.estado = 'BLOQUEO'; return; }
+            if (teclas[controles.abajo] && luchador.y === 340) { luchador.estado = 'AGACHADO'; return; }
+
+            if (teclas[controles.izquierda]) {
+                luchador.vx = -luchador.velocidad; luchador.mirandoDerecha = false; luchador.estado = 'CAMINANDO';
+            } else if (teclas[controles.derecha]) {
+                luchador.vx = luchador.velocidad; luchador.mirandoDerecha = true; luchador.estado = 'CAMINANDO';
+            }
+
+            luchador.x += luchador.vx;
+            if (luchador.x < 20) luchador.x = 20;
+            if (luchador.x > canvas.width - luchador.ancho - 20) luchador.x = canvas.width - luchador.ancho - 20;
+
+            if (teclas[controles.saltar] && luchador.y === 340) luchador.vy = luchador.salto;
+
+            if (teclas[controles.golpe]) { luchador.estado = 'GOLPE'; luchador.tiempoAccion = 16; }
+            else if (teclas[controles.patada]) { luchador.estado = 'PATADA'; luchador.tiempoAccion = 22; }
+        }
+
+        function actualizar() {
+            if (estadoJuego !== 'PELEA') return;
+            if (temblorPantalla > 0) temblorPantalla--;
+
+            let activeF1 = (activoP1 === 1) ? fighter1 : fighter1_B;
+            let activeF2 = (activoP2 === 2) ? fighter2 : fighter2_B;
+
+            if (modoJuegoActual === '2v2' && teclas['KeyT'] && fighter1_B) {
+                teclas['KeyT'] = false; activoP1 = (activoP1 === 1) ? 2 : 1;
+            }
+
+            if (activeF1.estado !== 'GOLPE' && activeF1.estado !== 'PATADA') activeF1.mirandoDerecha = activeF1.x < activeF2.x;
+            if (activeF2.estado !== 'GOLPE' && activeF2.estado !== 'PATADA') activeF2.mirandoDerecha = activeF2.x < activeF1.x;
+
+            actualizarLuchador(activeF1, activeF2, {
+                izquierda: 'KeyA', derecha: 'KeyD', saltar: 'KeyW', abajo: 'KeyS',
+                golpe: 'KeyF', patada: 'KeyG', bloquear: 'KeyH', especial: 'KeyE'
+            });
+
+            if (modoJuegoActual !== 'vs_cpu' && modoJuegoActual !== 'torneo') {
+                actualizarLuchador(activeF2, activeF1, {
+                    izquierda: 'ArrowLeft', derecha: 'ArrowRight', saltar: 'ArrowUp', abajo: 'ArrowDown',
+                    golpe: 'KeyJ', patada: 'KeyK', bloquear: 'KeyL', especial: 'KeyI'
+                });
+            } else {
+                actualizarLuchador(activeF2, activeF1, {});
+            }
+
+            for (let i = proyectiles.length - 1; i >= 0; i--) {
+                let p = proyectiles[i]; p.x += p.vx;
+                let objetivo = p.amigo ? activeF2 : activeF1;
+                if (p.x > objetivo.x && p.x < objetivo.x + objetivo.ancho && p.y > objetivo.y && p.y < objetivo.y + objetivo.alto) {
+                    aplicarDaño(p.amigo ? activeF1 : activeF2, objetivo, p.daño);
+                    proyectiles.splice(i, 1); continue;
+                }
+                if (p.x < 0 || p.x > canvas.width) proyectiles.splice(i, 1);
+            }
+
+            for (let i = particulas.length - 1; i >= 0; i--) {
+                let pt = particulas[i]; pt.x += pt.vx; pt.y += pt.vy; pt.vida--;
+                if (pt.vida <= 0) particulas.splice(i, 1);
+            }
+        }
+
+        function dibujarLuchadorRealista(l) {
+            ctx.save();
+            ctx.translate(l.x, l.y);
+
+            let agachado = l.estado === 'AGACHADO';
+            let alturaCuerpo = agachado ? 80 : 120;
+            let offsetAgachado = agachado ? 40 : 0;
+            let animIdle = (l.estado === 'IDLE') ? Math.sin(Date.now() / 150) * 2.5 : 0;
+
+            ctx.fillStyle = "#11111a";
+            if (agachado) { ctx.fillRect(8, 75, 11, 45); ctx.fillRect(25, 75, 11, 45); }
+            else { ctx.fillRect(6, 70, 12, 50); ctx.fillRect(26, 70, 12, 50); }
+
+            ctx.fillStyle = l.colorTraje || "#ffd700";
+            ctx.fillRect(4, offsetAgachado + 32 + animIdle, 36, 42);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(10, offsetAgachado + 38 + animIdle, 24, 6);
+
+            ctx.fillStyle = l.colorPiel || "#ffccaa";
+            ctx.fillRect(16, offsetAgachado + 20 + animIdle, 12, 12);
+            ctx.beginPath(); ctx.arc(22, offsetAgachado + 12 + animIdle, 14, 0, Math.PI * 2); ctx.fill();
+
+            ctx.fillStyle = l.colorCabello || "#111";
+            ctx.fillRect(10, offsetAgachado + 2 + animIdle, 24, 7);
+
+            let acc = l.estiloAcc;
+            ctx.fillStyle = "#00ffcc";
+            if (acc === 'cinta') { ctx.fillStyle = "#ff0000"; ctx.fillRect(8, offsetAgachado + 8 + animIdle, 28, 4); }
+            else if (acc === 'casco' || acc === 'yelmo') { ctx.fillStyle = "#444455"; ctx.fillRect(8, offsetAgachado + 2 + animIdle, 28, 10); }
+            else if (acc === 'diadema' || acc === 'visor') { ctx.fillStyle = "#00ffff"; ctx.fillRect(10, offsetAgachado + 10 + animIdle, 24, 4); }
+            else if (acc === 'gafas') { ctx.fillStyle = "#ff5500"; ctx.fillRect(12, offsetAgachado + 10 + animIdle, 20, 5); }
+            else if (acc === 'capucha') { ctx.fillStyle = "#440055"; ctx.beginPath(); ctx.arc(22, offsetAgachado + 12 + animIdle, 16, Math.PI, 0); ctx.fill(); }
+            else if (acc === 'mascara') { ctx.fillStyle = "#00ff33"; ctx.fillRect(14, offsetAgachado + 12 + animIdle, 16, 10); }
+            else if (acc === 'monoculo') { ctx.fillStyle = "#ffff00"; ctx.fillRect(22, offsetAgachado + 10 + animIdle, 6, 6); }
+            else if (acc === 'corona') { ctx.fillStyle = "#ffcc00"; ctx.fillRect(12, offsetAgachado + 1 + animIdle, 20, 5); }
+
+            ctx.fillStyle = "#ffffff";
+            let ojoX = l.mirandoDerecha ? 28 : 10;
+            ctx.fillRect(ojoX, offsetAgachado + 12 + animIdle, 5, 3);
+
+            ctx.fillStyle = "#ffaa00";
+            let armaX = l.mirandoDerecha ? 38 : -18;
+            ctx.fillRect(armaX, offsetAgachado + 44, 22, 6);
+
+            ctx.fillStyle = l.colorTraje || "#ffd700";
+            if (l.estado === 'GOLPE') {
+                let brazoDir = l.mirandoDerecha ? 40 : -32; ctx.fillRect(brazoDir, offsetAgachado + 38, 38, 11);
+            } else if (l.estado === 'PATADA') {
+                let piernaDir = l.mirandoDerecha ? 40 : -38; ctx.fillRect(piernaDir, offsetAgachado + 75, 38, 14);
+            } else {
+                ctx.fillRect(-5, offsetAgachado + 38, 9, 32); ctx.fillRect(40, offsetAgachado + 38, 9, 32);
+            }
+
+            if (l.estado === 'BLOQUEO') {
+                ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 3.5;
+                ctx.beginPath(); ctx.arc(22, alturaCuerpo / 2, 54, 0, Math.PI * 2); ctx.stroke();
+            }
+
+            ctx.restore();
+        }
+
+        function dibujar() {
+            let esc = escenarios[seleccionEscenario];
+            ctx.save();
+            if (temblorPantalla > 0) {
+                ctx.translate((Math.random() - 0.5) * temblorPantalla, (Math.random() - 0.5) * temblorPantalla);
+            }
+
+            ctx.fillStyle = esc.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = esc.detalle; ctx.lineWidth = 1.5;
+            ctx.strokeRect(100, 80, 200, 220); ctx.strokeRect(650, 80, 200, 220);
+
+            ctx.fillStyle = esc.suelo; ctx.fillRect(0, 440, canvas.width, 80);
+            ctx.strokeStyle = esc.linea; ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.moveTo(0, 440); ctx.lineTo(canvas.width, 440); ctx.stroke();
+
+            if (estadoJuego === 'PELEA') {
+                let activeF1 = (activoP1 === 1) ? fighter1 : fighter1_B;
+                let activeF2 = (activoP2 === 2) ? fighter2 : fighter2_B;
+                dibujarLuchadorRealista(activeF1);
+                dibujarLuchadorRealista(activeF2);
+
+                for (let p of proyectiles) {
+                    ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, Math.PI * 2); ctx.fill();
+                }
+                for (let pt of particulas) {
+                    ctx.fillStyle = pt.color; ctx.fillRect(pt.x, pt.y, 4, 4);
+                }
+            }
+            ctx.restore();
+
+            if (estadoJuego === 'PELEA') {
+                let activeF1 = (activoP1 === 1) ? fighter1 : fighter1_B;
+                let activeF2 = (activoP2 === 2) ? fighter2 : fighter2_B;
+
+                ctx.fillStyle = activeF1.colorTraje || "#ffd700"; ctx.font = "bold 13px 'Courier New'";
+                ctx.fillText(`${activeF1.nombre} [${activeF1.arma}]`, 30, 30);
+                ctx.fillStyle = activeF2.colorTraje || "#ffd700"; ctx.textAlign = "right";
+                ctx.fillText(`${activeF2.nombre} [${activeF2.arma}]`, canvas.width - 30, 30);
+                ctx.textAlign = "left";
+
+                ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+                ctx.strokeRect(30, 40, 320, 18);
+                ctx.fillStyle = "#110022"; ctx.fillRect(32, 42, 316, 14);
+                ctx.fillStyle = activeF1.colorTraje || "#ffd700"; ctx.fillRect(32, 42, (activeF1.vida / activeF1.vidaMax) * 316, 14);
+
+                ctx.strokeRect(canvas.width - 350, 40, 320, 18);
+                ctx.fillStyle = "#110022"; ctx.fillRect(canvas.width - 348, 42, 316, 14);
+                ctx.fillStyle = activeF2.colorTraje || "#ffd700"; 
+                ctx.fillRect(canvas.width - 348 + (1 - (activeF2.vida / activeF2.vidaMax)) * 316, 42, (activeF2.vida / activeF2.vidaMax) * 316, 14);
+
+                ctx.fillStyle = "#00ffff"; ctx.font = "11px 'Courier New'";
+                ctx.fillText(`ESPECIAL (E): ${activeF1.energia}%`, 30, 75);
+                ctx.textAlign = "right";
+                ctx.fillText(`ESPECIAL (I): ${activeF2.energia}%`, canvas.width - 30, 75);
+                ctx.textAlign = "left";
+
+                ctx.fillStyle = "#ffaa00"; ctx.font = "14px 'Courier New'";
+                let modoInfo = (modoJuegoActual === 'torneo') ? `TORNEO [Ronda ${rondaTorneo}/3]` : `Rondas: ${roundsP1} - ${roundsP2}`;
+                ctx.fillText(modoInfo, canvas.width / 2 - 80, 45);
+            }
+
+            if (estadoJuego === 'INICIO') {
+                ctx.fillStyle = "rgba(2, 2, 5, 0.96)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = "center"; ctx.fillStyle = "#ff0055"; ctx.font = "bold 28px 'Courier New'";
+                ctx.fillText("MORTAL STREET KOMBAT", canvas.width / 2, 70);
+
+                ctx.fillStyle = "#00ffcc"; ctx.font = "bold 14px 'Courier New'";
+                ctx.fillText("SELECCIONA EL MODO DE JUEGO:", canvas.width / 2, 110);
+
+                let opciones = ["1 vs 1 Local", "1 Jugador vs CPU", "Modo 2 vs 2 (Tag Team)", "Modo Torneo (Reto a GOLD)", "Multijugador LAN (Online)"];
+                opciones.forEach((op, idx) => {
+                    let y = 175 + (idx * 50);
+                    if (idx === menuOpcionIndex) {
+                        ctx.fillStyle = "#00ffcc"; ctx.font = "bold 19px 'Courier New'";
+                        ctx.fillText(`> [ ${op} ] <`, canvas.width / 2, y);
+                    } else {
+                        ctx.fillStyle = "#777"; ctx.font = "17px 'Courier New'";
+                        ctx.fillText(`[ ${op} ]`, canvas.width / 2, y);
+                    }
+                });
+                ctx.fillStyle = "#ffffff"; ctx.font = "12px 'Courier New'";
+                ctx.fillText("Usa W/S o Flechas para elegir y ENTER para confirmar", canvas.width / 2, canvas.height - 30);
+                ctx.textAlign = "left";
+            }
+
+            if (estadoJuego === 'MENU_DIFICULTAD') {
+                ctx.fillStyle = "rgba(2, 2, 5, 0.96)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = "center"; ctx.fillStyle = "#ff0055"; ctx.font = "bold 22px 'Courier New'";
+                ctx.fillText("SELECCIONA LA DIFICULTAD DE LA CPU", canvas.width / 2, 120);
+
+                let diffs = ["Fácil", "Normal", "Difícil"];
+                diffs.forEach((d, idx) => {
+                    let y = 220 + (idx * 60);
+                    if (idx === menuDificultadIndex) {
+                        ctx.fillStyle = "#00ffcc"; ctx.font = "bold 22px 'Courier New'";
+                        ctx.fillText(`> [ ${d} ] <`, canvas.width / 2, y);
+                    } else {
+                        ctx.fillStyle = "#777"; ctx.font = "19px 'Courier New'";
+                        ctx.fillText(`[ ${d} ]`, canvas.width / 2, y);
+                    }
+                });
+                ctx.textAlign = "left";
+            }
+
+            if (estadoJuego === 'MENU_LAN') {
+                ctx.fillStyle = "rgba(2, 2, 5, 0.96)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = "center"; ctx.fillStyle = "#ff0055"; ctx.font = "bold 24px 'Courier New'";
+                ctx.fillText("MODO MULTIJUGADOR LAN", canvas.width / 2, 120);
+
+                let ops = ["Crear Sala (Host)", "Unirse a Sala"];
+                ops.forEach((op, idx) => {
+                    let y = 240 + (idx * 60);
+                    if (idx === menuLanIndex) {
+                        ctx.fillStyle = "#00ffcc"; ctx.font = "bold 20px 'Courier New'";
+                        ctx.fillText(`> [ ${op} ] <`, canvas.width / 2, y);
+                    } else {
+                        ctx.fillStyle = "#777"; ctx.font = "18px 'Courier New'";
+                        ctx.fillText(`[ ${op} ]`, canvas.width / 2, y);
+                    }
+                });
+                ctx.textAlign = "left";
+            }
+
+            if (estadoJuego === 'MENU_ESCENARIO') {
+                ctx.fillStyle = "rgba(2, 2, 5, 0.96)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = "center"; ctx.fillStyle = "#ff0055"; ctx.font = "bold 22px 'Courier New'";
+                ctx.fillText("SELECCIONA EL ESCENARIO", canvas.width / 2, 80);
+
+                escenarios.forEach((esc, idx) => {
+                    let yPos = 180 + (idx * 60);
+                    if (idx === seleccionEscenario) {
+                        ctx.fillStyle = "#00ffcc"; ctx.font = "bold 20px 'Courier New'";
+                        ctx.fillText(`> [ ${esc.nombre} ] <`, canvas.width / 2, yPos);
+                    } else {
+                        ctx.fillStyle = "#888"; ctx.font = "18px 'Courier New'";
+                        ctx.fillText(`[ ${esc.nombre} ]`, canvas.width / 2, yPos);
+                    }
+                });
+                ctx.textAlign = "left";
+            }
+
+            if (estadoJuego === 'MENU_P1' || estadoJuego === 'MENU_P2' || estadoJuego === 'MENU_P1_B' || estadoJuego === 'MENU_P2_B') {
+                ctx.fillStyle = "rgba(2, 2, 5, 0.96)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = "center"; ctx.fillStyle = "#ff0055"; ctx.font = "bold 20px 'Courier New'";
+                
+                let titulo = "SELECCIONA TU LUCHADOR";
+                if (estadoJuego === 'MENU_P1') titulo = "JUGADOR 1: PERSONAJE PRINCIPAL";
+                if (estadoJuego === 'MENU_P1_B') titulo = "JUGADOR 1: SEGUNDO LUCHADOR (TAG)";
+                if (estadoJuego === 'MENU_P2') titulo = "JUGADOR 2: PERSONAJE PRINCIPAL";
+                if (estadoJuego === 'MENU_P2_B') titulo = "JUGADOR 2: SEGUNDO LUCHADOR (TAG)";
+
+                let actualSel = (estadoJuego === 'MENU_P1') ? seleccionP1 : (estadoJuego === 'MENU_P2') ? seleccionP2 : (estadoJuego === 'MENU_P1_B') ? seleccionP1_B : seleccionP2_B;
+
+                ctx.fillText(titulo, canvas.width / 2, 35);
+                ctx.font = "12px 'Courier New'";
+                personajesData.forEach((p, index) => {
+                    let yPos = 75 + (index * 40);
+                    if (index === actualSel) {
+                        ctx.fillStyle = "#00ffcc";
+                        ctx.fillText(`> [ ${p.nombre} ] | Arma: ${p.arma} | Poder: ${p.habilidad} <`, canvas.width / 2, yPos);
+                    } else {
+                        ctx.fillStyle = "#777777";
+                        ctx.fillText(`[ ${p.nombre} ] | Arma: ${p.arma} | Poder: ${p.habilidad}`, canvas.width / 2, yPos);
+                    }
+                });
+                ctx.textAlign = "left";
+            }
+
+            if (estadoJuego === 'GAMEOVER') {
+                ctx.fillStyle = "rgba(2, 2, 5, 0.92)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.textAlign = "center"; ctx.fillStyle = "#ff0055"; ctx.font = "bold 28px 'Courier New'";
+                let ganadorFinal = roundsP1 > roundsP2 ? "¡VICTORIA ABSOLUTA!" : "¡DERROTA! EL RIVAL / JEFE GANA";
+                ctx.fillText(ganadorFinal, canvas.width / 2, canvas.height / 2 - 20);
+                ctx.fillStyle = "#ffffff"; ctx.font = "15px 'Courier New'";
+                ctx.fillText("Presiona ENTER para volver al menú principal", canvas.width / 2, canvas.height / 2 + 30);
+                ctx.textAlign = "left";
+            }
+        }
+
+        function loop() {
+            actualizar();
+            dibujar();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
